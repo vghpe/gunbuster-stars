@@ -26,6 +26,7 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import GUI from 'lil-gui';
 
 // ---------------------------------------------------------------------------
@@ -55,13 +56,11 @@ const P = {
   useGaussian:   true,
   edgeSoftness:  0.06,
   gaussianSigma: 0.38,
-  // Placement — 3-layer system (weights are relative, normalised internally)
+  irregularity:  0.30,     // 0 = round, 1 = blobby (trig domain warp)
+  // Placement — 2-layer system (weights are relative, normalised internally)
   layer_band:     0.55,    // galaxy band — broad stream running across frame
   band_angle:    -28,      // degrees; direction the band runs (0 = horizontal)
   band_width:     0.30,    // Gaussian σ perpendicular to band (NDC units)
-  layer_cluster:  0.30,    // tight clusters, seeded along the band
-  cluster_count:  7,
-  cluster_spread: 0.08,    // Gaussian σ of each cluster
   layer_field:    0.15,    // residual uniform field stars
   // Palette weights
   w_white:     0.73,
@@ -73,10 +72,11 @@ const P = {
   w_deepBlue:  0.11,
   w_yellow:    0.00,
   w_green:     0.00,
-  // Halation (film light scatter)
+  // Halation — multi-scale Gaussian bloom (UnrealBloomPass)
   hal_enabled:   true,
-  hal_radius:    4.0,
-  hal_intensity: 1.5,
+  hal_strength:  0.7,      // bloom brightness
+  hal_radius:    0.5,      // spread (0–1, not pixels)
+  hal_threshold: 0.0,      // luminance threshold — 0 = all stars glow
   // Chromatic aberration
   ca_enabled:  true,
   ca_angle:    34,
@@ -141,32 +141,53 @@ cam.position.z = 1;
 const starVert = /* glsl */`
   attribute float starSize;
   attribute vec3  starColor;
+  attribute float starSeed;   // per-star random value for organic blob shaping
   varying   vec3  vColor;
+  varying   float vSeed;
 
   void main() {
-    vColor      = starColor;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    vColor       = starColor;
+    vSeed        = starSeed;
+    gl_Position  = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
     gl_PointSize = starSize;
   }
 `;
 
 const starFrag = /* glsl */`
-  uniform float uEdgeSoftness;   // AA band width for opaque mode
-  uniform float uUseGaussian;    // 0 = opaque disk, 1 = Gaussian
-  uniform float uGaussianSigma;  // σ for Gaussian mode
+  uniform float uEdgeSoftness;
+  uniform float uUseGaussian;
+  uniform float uGaussianSigma;
+  uniform float uIrregularity;   // 0 = round, 1 = blobby
   varying vec3  vColor;
+  varying float vSeed;
 
   void main() {
     vec2  pc   = gl_PointCoord - 0.5;
-    float dist = length(pc) * 2.0;     // 0 center, 1 inscribed circle edge
+    float dist = length(pc) * 2.0;
+
+    // Trig domain warp — displaces the effective radius by a sum of harmonics.
+    // Each star gets a unique phase offset (vSeed), producing distinct blob shapes
+    // that evoke uneven gouache brush marks or stipple dots.
+    if (uIrregularity > 0.0 && dist > 0.0) {
+      float angle = atan(pc.y, pc.x);
+      // Independent phase per harmonic via fract-hashing vSeed.
+      // All three offsets are decorrelated, so every star gets a unique blob.
+      float TAU  = 6.28318;
+      float ph0  = fract(vSeed          ) * TAU;
+      float ph1  = fract(vSeed * 13.739 ) * TAU;
+      float ph2  = fract(vSeed * 37.123 ) * TAU;
+      float warp = sin(angle * 2.0 + ph0) * 0.50
+                 + sin(angle * 3.0 + ph1) * 0.30
+                 + sin(angle * 5.0 + ph2) * 0.20;
+      // At irregularity=1, radius varies ±30%
+      dist = dist * (1.0 + warp * uIrregularity * 0.30);
+    }
 
     float alpha;
     if (uUseGaussian > 0.5) {
-      // Gaussian radial falloff
       float sigma = mix(0.25, 0.95, uGaussianSigma);
       alpha = exp(-(dist * dist) / (2.0 * sigma * sigma));
     } else {
-      // Opaque disk with controllable AA edge (gouache dot)
       alpha = 1.0 - smoothstep(1.0 - uEdgeSoftness, 1.0 + uEdgeSoftness * 0.5, dist);
     }
 
@@ -200,9 +221,8 @@ function buildStars() {
   const count = P.count;
 
   // --- Placement setup ---
-  const totalLayerW = P.layer_band + P.layer_cluster + P.layer_field;
-  const wBand    = P.layer_band    / totalLayerW;
-  const wCluster = P.layer_cluster / totalLayerW;
+  const totalLayerW = P.layer_band + P.layer_field;
+  const wBand    = P.layer_band / totalLayerW;
   // wField = remainder
 
   // Band basis vectors
@@ -210,19 +230,13 @@ function buildStars() {
   const bandDir  = [ Math.cos(bandRad),  Math.sin(bandRad)];
   const bandPerp = [-Math.sin(bandRad),  Math.cos(bandRad)];
 
-  // Cluster centres: seeded along the band axis, small perpendicular scatter
-  const centres = Array.from({ length: P.cluster_count }, () => {
-    const t  = (rng() * 2 - 1) * 0.85;          // position along band
-    const s  = (rng() - 0.5) * P.band_width;     // small perp offset within band
-    return [
-      t * bandDir[0] + s * bandPerp[0],
-      t * bandDir[1] + s * bandPerp[1],
-    ];
-  });
-
   const positions = new Float32Array(count * 3);
   const colors    = new Float32Array(count * 3);
   const sizes     = new Float32Array(count);
+  // Separate RNG fork for blob seeds — doesn't disturb placement/size/colour sequence
+  const seedRng   = makeRNG(P.seed ^ 0xDEADBEEF);
+  const seeds     = new Float32Array(count);
+  for (let si = 0; si < count; si++) seeds[si] = seedRng();
 
   for (let i = 0; i < count; i++) {
     let px, py;
@@ -233,12 +247,6 @@ function buildStars() {
       const [gPerp]  = gaussianPair(rng);
       px = t       * bandDir[0]  + gPerp * P.band_width * bandPerp[0];
       py = t       * bandDir[1]  + gPerp * P.band_width * bandPerp[1];
-    } else if (draw < wBand + wCluster) {
-      // Tight cluster star, cluster centres lie along the band
-      const ci       = Math.floor(rng() * P.cluster_count);
-      const [gx, gy] = gaussianPair(rng);
-      px = centres[ci][0] + gx * P.cluster_spread;
-      py = centres[ci][1] + gy * P.cluster_spread;
     } else {
       // Sparse field star — uniform across entire frame
       px = rng() * 2 - 1;
@@ -265,6 +273,7 @@ function buildStars() {
   geo.setAttribute('position',  new THREE.BufferAttribute(positions, 3));
   geo.setAttribute('starColor', new THREE.BufferAttribute(colors,    3));
   geo.setAttribute('starSize',  new THREE.BufferAttribute(sizes,     1));
+  geo.setAttribute('starSeed',  new THREE.BufferAttribute(seeds,     1));
 
   const mat = new THREE.ShaderMaterial({
     vertexShader:   starVert,
@@ -273,6 +282,7 @@ function buildStars() {
       uEdgeSoftness:  { value: P.edgeSoftness },
       uUseGaussian:   { value: P.useGaussian ? 1.0 : 0.0 },
       uGaussianSigma: { value: P.gaussianSigma },
+      uIrregularity:  { value: P.irregularity },
     },
     transparent: true,
     depthWrite:  false,
@@ -282,54 +292,6 @@ function buildStars() {
   starPoints = new THREE.Points(geo, mat);
   scene.add(starPoints);
 }
-
-// ---------------------------------------------------------------------------
-// Halation ShaderPass (film light scatter — glow around bright stars)
-// ---------------------------------------------------------------------------
-const HalationShader = {
-  uniforms: {
-    tDiffuse:   { value: null },
-    uRadius:    { value: new THREE.Vector2(0, 0) },
-    uIntensity: { value: 0.25 },
-    uEnabled:   { value: 1.0 },
-  },
-  vertexShader: /* glsl */`
-    varying vec2 vUv;
-    void main() {
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: /* glsl */`
-    uniform sampler2D tDiffuse;
-    uniform vec2      uRadius;
-    uniform float     uIntensity;
-    uniform float     uEnabled;
-    varying vec2      vUv;
-
-    void main() {
-      vec4 base = texture2D(tDiffuse, vUv);
-      if (uEnabled < 0.5) {
-        gl_FragColor = base;
-        return;
-      }
-      // 3 concentric rings × 8 directions = 24 taps
-      vec4  glow = vec4(0.0);
-      float tw   = 0.0;
-      for (int ring = 1; ring <= 3; ring++) {
-        vec2  r = uRadius * (float(ring) / 3.0);
-        float w = 1.0 / (float(ring) * float(ring));
-        for (int s = 0; s < 8; s++) {
-          float a = float(s) * 6.28318530718 / 8.0;
-          glow += texture2D(tDiffuse, vUv + vec2(cos(a), sin(a)) * r) * w;
-          tw += w;
-        }
-      }
-      glow /= tw;
-      gl_FragColor = base + glow * uIntensity;
-    }
-  `,
-};
 
 // ---------------------------------------------------------------------------
 // Chromatic Aberration ShaderPass
@@ -469,13 +431,17 @@ const FilmGrainShader = {
 };
 
 // ---------------------------------------------------------------------------
-// Post-processing: Render → Halation → CA → Film Colour → Film Grain
+// Post-processing: Render → Bloom → CA → Film Colour → Film Grain
 // ---------------------------------------------------------------------------
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, cam));
 
-const halPass = new ShaderPass(HalationShader);
-composer.addPass(halPass);
+// UnrealBloomPass: multi-scale separable Gaussian pyramid, screens over original
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  P.hal_strength, P.hal_radius, P.hal_threshold,
+);
+composer.addPass(bloomPass);
 
 const caPass = new ShaderPass(ChromaticAberrationShader);
 composer.addPass(caPass);
@@ -487,12 +453,9 @@ const fgPass = new ShaderPass(FilmGrainShader);
 composer.addPass(fgPass);
 
 function updateHalUniforms() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  const r = P.hal_enabled ? P.hal_radius : 0;
-  halPass.uniforms.uRadius.value.set(r / w, r / h);
-  halPass.uniforms.uIntensity.value = P.hal_intensity;
-  halPass.uniforms.uEnabled.value   = P.hal_enabled ? 1.0 : 0.0;
+  bloomPass.strength  = P.hal_enabled ? P.hal_strength  : 0;
+  bloomPass.radius    = P.hal_radius;
+  bloomPass.threshold = P.hal_threshold;
 }
 
 function updateCAUniforms() {
@@ -532,13 +495,10 @@ fStars.add(P, 'sizeExponent', 1.0, 8,    0.1) .name('Size exponent') .onFinishCh
 
 const fPlace = gui.addFolder('Placement');
 // Weights are relative — only the ratios matter, not absolute values
-fPlace.add(P, 'layer_band',    0, 1,    0.01).name('Band weight')     .onFinishChange(buildStars);
-fPlace.add(P, 'band_angle',  -90, 90,   1)   .name('Band angle (°)')  .onFinishChange(buildStars);
-fPlace.add(P, 'band_width',  0.05,0.8,  0.01).name('Band width')      .onFinishChange(buildStars);
-fPlace.add(P, 'layer_cluster', 0, 1,    0.01).name('Cluster weight')  .onFinishChange(buildStars);
-fPlace.add(P, 'cluster_count',1, 20,    1)   .name('Cluster count')   .onFinishChange(buildStars);
-fPlace.add(P, 'cluster_spread',0.01,0.3,0.01).name('Cluster spread')  .onFinishChange(buildStars);
-fPlace.add(P, 'layer_field',   0, 1,    0.01).name('Field weight')    .onFinishChange(buildStars);
+fPlace.add(P, 'layer_band',  0, 1,    0.01).name('Band weight')    .onFinishChange(buildStars);
+fPlace.add(P, 'band_angle', -90, 90,   1)   .name('Band angle (°)') .onFinishChange(buildStars);
+fPlace.add(P, 'band_width', 0.05,0.8,  0.01).name('Band width')     .onFinishChange(buildStars);
+fPlace.add(P, 'layer_field', 0, 1,    0.01).name('Field weight')    .onFinishChange(buildStars);
 
 const fShape = gui.addFolder('Star Shape');
 fShape.add(P, 'useGaussian').name('Gaussian mode (vs opaque)')
@@ -547,6 +507,8 @@ fShape.add(P, 'edgeSoftness',  0, 0.3, 0.005).name('Edge AA (opaque mode)')
   .onChange(v => { if (starPoints) starPoints.material.uniforms.uEdgeSoftness.value = v; });
 fShape.add(P, 'gaussianSigma', 0, 1.0, 0.01) .name('σ spread (Gaussian mode)')
   .onChange(v => { if (starPoints) starPoints.material.uniforms.uGaussianSigma.value = v; });
+fShape.add(P, 'irregularity',  0, 1.0, 0.01) .name('Blob warp')
+  .onChange(v => { if (starPoints) starPoints.material.uniforms.uIrregularity.value = v; });
 
 const fColors = gui.addFolder('Color Weights').close();
 fColors.add(P, 'w_white',    0, 1, 0.01).name('Cream (#FFFBED)').onFinishChange(buildStars);
@@ -560,9 +522,10 @@ fColors.add(P, 'w_yellow',   0, 1, 0.01).name('Yellow')         .onFinishChange(
 fColors.add(P, 'w_green',    0, 1, 0.01).name('Green')          .onFinishChange(buildStars);
 
 const fHal = gui.addFolder('Halation (Film Glow)');
-fHal.add(P, 'hal_enabled')                .name('Enabled')     .onChange(updateHalUniforms);
-fHal.add(P, 'hal_radius',    1, 30,  0.5) .name('Radius (px)') .onChange(updateHalUniforms);
-fHal.add(P, 'hal_intensity', 0, 3.0, 0.01).name('Intensity')   .onChange(updateHalUniforms);
+fHal.add(P, 'hal_enabled')                  .name('Enabled')      .onChange(updateHalUniforms);
+fHal.add(P, 'hal_strength',  0, 3.0,  0.01) .name('Strength')     .onChange(updateHalUniforms);
+fHal.add(P, 'hal_radius',    0, 1.0,  0.01) .name('Spread (0–1)') .onChange(updateHalUniforms);
+fHal.add(P, 'hal_threshold', 0, 1.0,  0.01) .name('Threshold')    .onChange(updateHalUniforms);
 
 const fCA = gui.addFolder('Chromatic Aberration');
 fCA.add(P, 'ca_enabled')              .name('Enabled')       .onChange(updateCAUniforms);
