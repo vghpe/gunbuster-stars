@@ -47,52 +47,52 @@ function makeRNG(seed) {
 // ---------------------------------------------------------------------------
 const P = {
   // Stars
-  count:        1184,
-  seed:         3240,
+  count:        2279,
+  seed:         5824,
   sizeMin:      0.7,
-  sizeMax:      5.2,
+  sizeMax:      4.7,
   sizeExponent: 3.5,       // power-law exponent — higher = many more tiny stars
   // Star shape
-  useGaussian:   true,
-  edgeSoftness:  0.06,
-  gaussianSigma: 0.38,
-  irregularity:  0.30,     // 0 = round, 1 = blobby (trig domain warp)
+  useGaussian:   false,
+  edgeSoftness:  0.30,
+  gaussianSigma: 0.56,
+  irregularity:  0.52,     // 0 = round, 1 = blobby (trig domain warp)
   // Placement — 2-layer system (weights are relative, normalised internally)
   layer_band:     0.55,    // galaxy band — broad stream running across frame
   band_angle:    -28,      // degrees; direction the band runs (0 = horizontal)
-  band_width:     0.30,    // Gaussian σ perpendicular to band (NDC units)
+  band_width:     0.57,    // Gaussian σ perpendicular to band (NDC units)
   layer_field:    0.15,    // residual uniform field stars
   // Palette weights
-  w_white:     0.73,
+  w_white:     0.29,
   w_paleBlue:  0.74,
-  w_red:       0.41,
+  w_red:       0.06,
   w_cyan:      0.08,
   w_magenta:   0.00,
-  w_orange:    0.00,
-  w_deepBlue:  0.11,
+  w_orange:    0.14,
+  w_deepBlue:  0.09,
   w_yellow:    0.00,
   w_green:     0.00,
   // Halation — multi-scale Gaussian bloom (UnrealBloomPass)
   hal_enabled:   true,
-  hal_strength:  0.7,      // bloom brightness
+  hal_strength:  0.47,      // bloom brightness
   hal_radius:    0.5,      // spread (0–1, not pixels)
   hal_threshold: 0.0,      // luminance threshold — 0 = all stars glow
   // Chromatic aberration
   ca_enabled:  true,
-  ca_angle:    34,
-  ca_strength: 0.3,
-  ca_rMult:    0.73,
-  ca_bMult:    0.72,
+  ca_angle:    40,
+  ca_strength: 0.2,
+  ca_rMult:    1.14,
+  ca_bMult:    0.74,
   // Film colour grade (applied after CA)
   fc_enabled:   true,
-  fc_blackLift: 0.016,     // raise black floor (film base density / fog)
+  fc_blackLift: 0.008,     // raise black floor (film base density / fog)
   fc_gamma:     0.92,      // midtone curve (<1 = darker mids, film-like)
-  fc_warmth:    0.055,     // >0 = push R up / B down (warm stock)
-  fc_saturation:0.88,      // <1 = slightly desaturated, like aged print
+  fc_warmth:    0.0,      // >0 = push R up / B down (warm stock)
+  fc_saturation: 1.13,      // <1 = slightly desaturated, like aged print
   // Film grain
   fg_enabled:    true,
-  fg_intensity:  0.038,    // grain amplitude
-  fg_scale:      1.0,      // grain pixel size
+  fg_intensity:  0.028,    // grain amplitude
+  fg_scale:      2.9,      // grain pixel size
   fg_colorNoise: 0.25,     // 0 = mono grain, 1 = full colour grain
 };
 
