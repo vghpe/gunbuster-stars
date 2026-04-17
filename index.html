@@ -8,23 +8,41 @@
     body { background: #000; overflow: hidden; width: 100vw; height: 100vh; }
     canvas { display: block; }
     .lil-gui { --width: 280px; }
-    #ref-img {
+    #ref-wrap {
       position: fixed;
       top: 0;
       left: 0;
       width: 25vw;
-      height: auto;
-      pointer-events: none;
       z-index: 10;
+      pointer-events: none;
+    }
+    #ref-img {
+      display: block;
+      width: 100%;
+      height: auto;
       opacity: 0.9;
       border: 2px solid rgba(255, 255, 255, 1.0);
+    }
+    #ref-label {
+      position: absolute;
+      bottom: 6px;
+      left: 6px;
+      color: #fff;
+      font: 600 10px/1 monospace;
+      letter-spacing: 0.04em;
+      text-shadow: 0 1px 3px #000, 0 0 6px #000;
+      white-space: nowrap;
+      pointer-events: none;
     }
     #load-input { display: none; }
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
-<img id="ref-img" src="refs/episode2open.png" alt="reference" />
+<div id="ref-wrap">
+  <img id="ref-img" src="refs/gunbuster_ep2_00m11s.png" alt="reference" />
+  <span id="ref-label">gunbuster_ep2_00m11s</span>
+</div>
 <input type="file" id="load-input" accept=".json" />
 <script type="importmap">
 {
@@ -115,9 +133,9 @@ const P = {
 // Add or rename entries here; the JSON files are the source of truth.
 // ---------------------------------------------------------------------------
 const PRESET_MANIFEST = [
-  { name: 'E2 Opening', json: 'presets/s2_opening.json', ref: 'refs/episode2open.png' },
-  { name: 'Deep Field',  json: 'presets/deep_field.json',  ref: 'refs/temp.png' },
-  { name: 'Encounter',   json: 'presets/encounter.json',   ref: 'refs/encounter.png' },
+  { name: 'Opening', json: 'presets/s2_opening.json', ref: 'refs/gunbuster_ep2_00m11s.png' },
+  { name: 'HyperSpace',  json: 'presets/deep_field.json',  ref: 'refs/gunbuster_ep2_17m39s.png' },
+  { name: 'Encounter',   json: 'presets/encounter.json',   ref: 'refs/gunbuster_ep5_18m38s.png' },
 ];
 
 // Top-level await is valid in type="module"
@@ -537,12 +555,17 @@ function applyPreset(name) {
 }
 
 // Preset → reference image mapping
-const refImg = document.getElementById('ref-img');
+const refWrap  = document.getElementById('ref-wrap');
+const refImg   = document.getElementById('ref-img');
+const refLabel = document.getElementById('ref-label');
 const loadInput = document.getElementById('load-input');
 
 function setRefImage(presetName) {
   const preset = PRESETS.find(p => p.name === presetName);
-  if (preset) refImg.src = preset.ref;
+  if (!preset) return;
+  refImg.src = preset.ref;
+  // Extract filename without extension for the label
+  refLabel.textContent = preset.ref.split('/').pop().replace(/\.[^.]+$/, '');
 }
 
 function savePreset() {
@@ -587,7 +610,7 @@ const gui = new GUI({ title: 'Starfield Parameters' });
 
 const refState = { showRef: true };
 gui.add(refState, 'showRef').name('Show ref').onChange(v => {
-  refImg.style.display = v ? '' : 'none';
+  refWrap.style.display = v ? '' : 'none';
 });
 
 const presetState = { preset: PRESETS[0].name };
@@ -679,6 +702,7 @@ updateHalUniforms();
 updateCAUniforms();
 updateFCUniforms();
 updateFGUniforms();
+setRefImage(PRESETS[0].name);
 
 // ---------------------------------------------------------------------------
 // Render loop
