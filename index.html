@@ -8,10 +8,24 @@
     body { background: #000; overflow: hidden; width: 100vw; height: 100vh; }
     canvas { display: block; }
     .lil-gui { --width: 280px; }
+    #ref-img {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 25vw;
+      height: auto;
+      pointer-events: none;
+      z-index: 10;
+      opacity: 0.9;
+      border: 2px solid rgba(255, 255, 255, 1.0);
+    }
+    #load-input { display: none; }
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<img id="ref-img" src="refs/episode2open.png" alt="reference" />
+<input type="file" id="load-input" accept=".json" />
 <script type="importmap">
 {
   "imports": {
@@ -95,6 +109,28 @@ const P = {
   fg_scale:      2.9,      // grain pixel size
   fg_colorNoise: 0.25,     // 0 = mono grain, 1 = full colour grain
 };
+
+// ---------------------------------------------------------------------------
+// Presets — loaded from presets/*.json so you can edit files directly.
+// Add or rename entries here; the JSON files are the source of truth.
+// ---------------------------------------------------------------------------
+const PRESET_MANIFEST = [
+  { name: 'E2 Opening', json: 'presets/s2_opening.json', ref: 'refs/episode2open.png' },
+  { name: 'Deep Field',  json: 'presets/deep_field.json',  ref: 'refs/temp.png' },
+  { name: 'Encounter',   json: 'presets/encounter.json',   ref: 'refs/encounter.png' },
+];
+
+// Top-level await is valid in type="module"
+const PRESETS = await Promise.all(
+  PRESET_MANIFEST.map(async m => ({
+    name:   m.name,
+    ref:    m.ref,
+    params: await fetch(m.json).then(r => r.json()),
+  }))
+);
+
+// Initialise P from the first preset so defaults always match the file
+Object.assign(P, PRESETS[0].params);
 
 // Star palette definitions
 const PALETTE_DEFS = [
@@ -480,10 +516,88 @@ function updateFCUniforms() {
   fcPass.uniforms.uEnabled.value    = P.fc_enabled ? 1.0 : 0.0;
 }
 
+function updateFGUniforms() {
+  fgPass.uniforms.uEnabled.value    = P.fg_enabled    ? 1.0 : 0.0;
+  fgPass.uniforms.uIntensity.value  = P.fg_intensity;
+  fgPass.uniforms.uScale.value      = P.fg_scale;
+  fgPass.uniforms.uColorNoise.value = P.fg_colorNoise;
+}
+
+function applyPreset(name) {
+  const preset = PRESETS.find(p => p.name === name);
+  if (!preset) return;
+  Object.assign(P, preset.params);
+  buildStars();
+  updateHalUniforms();
+  updateCAUniforms();
+  updateFCUniforms();
+  updateFGUniforms();
+  // Sync all GUI slider displays to the new P values
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+}
+
+// Preset → reference image mapping
+const refImg = document.getElementById('ref-img');
+const loadInput = document.getElementById('load-input');
+
+function setRefImage(presetName) {
+  const preset = PRESETS.find(p => p.name === presetName);
+  if (preset) refImg.src = preset.ref;
+}
+
+function savePreset() {
+  const json = JSON.stringify(P, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = (presetState.preset.replace(/\s+/g, '_').toLowerCase()) + '.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function loadPresetFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const loaded = JSON.parse(e.target.result);
+      Object.assign(P, loaded);
+      buildStars();
+      updateHalUniforms();
+      updateCAUniforms();
+      updateFCUniforms();
+      updateFGUniforms();
+      gui.controllersRecursive().forEach(c => c.updateDisplay());
+    } catch (err) {
+      console.error('Failed to load preset JSON:', err);
+    }
+  };
+  reader.readAsText(file);
+}
+
+loadInput.addEventListener('change', e => {
+  if (e.target.files[0]) loadPresetFile(e.target.files[0]);
+  e.target.value = '';
+});
+
 // ---------------------------------------------------------------------------
 // lil-gui
 // ---------------------------------------------------------------------------
 const gui = new GUI({ title: 'Starfield Parameters' });
+
+const refState = { showRef: true };
+gui.add(refState, 'showRef').name('Show ref').onChange(v => {
+  refImg.style.display = v ? '' : 'none';
+});
+
+const presetState = { preset: PRESETS[0].name };
+gui.add(presetState, 'preset', PRESETS.map(p => p.name))
+  .name('Preset')
+  .onChange(name => { applyPreset(name); setRefImage(name); });
+
+const ioState = {};
+gui.add({ save: savePreset }, 'save').name('Save JSON ↓');
+gui.add({ load: () => loadInput.click() }, 'load').name('Load JSON ↑');
 
 const fStars = gui.addFolder('Stars');
 fStars.add(P, 'count',        100, 3000, 1)   .name('Count')         .onFinishChange(buildStars);
@@ -564,6 +678,7 @@ buildStars();
 updateHalUniforms();
 updateCAUniforms();
 updateFCUniforms();
+updateFGUniforms();
 
 // ---------------------------------------------------------------------------
 // Render loop
