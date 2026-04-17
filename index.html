@@ -178,8 +178,23 @@ function samplePalette(rng) {
 // Scene setup
 // ---------------------------------------------------------------------------
 const canvas = document.getElementById('c');
+
+// Cap internal render resolution to keep the GPU load manageable.
+// CSS still stretches the canvas to fill the window.
+const MAX_RENDER_W = 1920;
+const MAX_RENDER_H = 1080;
+
+function clampedSize() {
+  const dpr   = Math.min(window.devicePixelRatio, 2);
+  const rawW  = window.innerWidth  * dpr;
+  const rawH  = window.innerHeight * dpr;
+  const scale = Math.min(1, MAX_RENDER_W / rawW, MAX_RENDER_H / rawH);
+  return { w: Math.round(rawW * scale), h: Math.round(rawH * scale), dpr: dpr * scale };
+}
+
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const initSize = clampedSize();
+renderer.setPixelRatio(initSize.dpr);
 renderer.setSize(window.innerWidth, window.innerHeight);
 
 const scene = new THREE.Scene();
@@ -306,8 +321,10 @@ function buildStars() {
       px = rng() * 2 - 1;
       py = rng() * 2 - 1;
     }
-    positions[i * 3 + 0] = Math.max(-1, Math.min(1, px));
-    positions[i * 3 + 1] = Math.max(-1, Math.min(1, py));
+    // Skip stars that land outside the view — clamping would pile them up at edges
+    if (px < -1 || px > 1 || py < -1 || py > 1) { i--; continue; }
+    positions[i * 3 + 0] = px;
+    positions[i * 3 + 1] = py;
     positions[i * 3 + 2] = 0;
 
     // Size: power-law — draw uniform, raise to exponent → biased toward 0
@@ -345,6 +362,7 @@ function buildStars() {
 
   starPoints = new THREE.Points(geo, mat);
   scene.add(starPoints);
+  requestRender();
 }
 
 // ---------------------------------------------------------------------------
@@ -510,6 +528,7 @@ function updateHalUniforms() {
   bloomPass.strength  = P.hal_enabled ? P.hal_strength  : 0;
   bloomPass.radius    = P.hal_radius;
   bloomPass.threshold = P.hal_threshold;
+  requestRender();
 }
 
 function updateCAUniforms() {
@@ -524,6 +543,7 @@ function updateCAUniforms() {
   caPass.uniforms.uRMult.value   = P.ca_rMult;
   caPass.uniforms.uBMult.value   = P.ca_bMult;
   caPass.uniforms.uEnabled.value = P.ca_enabled ? 1.0 : 0.0;
+  requestRender();
 }
 
 function updateFCUniforms() {
@@ -532,6 +552,7 @@ function updateFCUniforms() {
   fcPass.uniforms.uWarmth.value     = P.fc_warmth;
   fcPass.uniforms.uSaturation.value = P.fc_saturation;
   fcPass.uniforms.uEnabled.value    = P.fc_enabled ? 1.0 : 0.0;
+  requestRender();
 }
 
 function updateFGUniforms() {
@@ -539,6 +560,7 @@ function updateFGUniforms() {
   fgPass.uniforms.uIntensity.value  = P.fg_intensity;
   fgPass.uniforms.uScale.value      = P.fg_scale;
   fgPass.uniforms.uColorNoise.value = P.fg_colorNoise;
+  requestRender();
 }
 
 function applyPreset(name) {
@@ -611,6 +633,7 @@ const gui = new GUI({ title: 'Startfield parameters : lil-gui 0.21.0' });
 const refState = { showRef: true };
 gui.add(refState, 'showRef').name('Show ref').onChange(v => {
   refWrap.style.display = v ? '' : 'none';
+  requestRender();
 });
 
 const presetState = { preset: PRESETS[0].name };
@@ -639,13 +662,13 @@ fPlace.add(P, 'layer_field', 0, 1,    0.01).name('Field weight')    .onFinishCha
 
 const fShape = gui.addFolder('Star Shape');
 fShape.add(P, 'useGaussian').name('Gaussian mode (vs opaque)')
-  .onChange(v => { if (starPoints) starPoints.material.uniforms.uUseGaussian.value = v ? 1.0 : 0.0; });
+  .onChange(v => { if (starPoints) starPoints.material.uniforms.uUseGaussian.value = v ? 1.0 : 0.0; requestRender(); });
 fShape.add(P, 'edgeSoftness',  0, 0.3, 0.005).name('Edge AA (opaque mode)')
-  .onChange(v => { if (starPoints) starPoints.material.uniforms.uEdgeSoftness.value = v; });
+  .onChange(v => { if (starPoints) starPoints.material.uniforms.uEdgeSoftness.value = v; requestRender(); });
 fShape.add(P, 'gaussianSigma', 0, 1.0, 0.01) .name('σ spread (Gaussian mode)')
-  .onChange(v => { if (starPoints) starPoints.material.uniforms.uGaussianSigma.value = v; });
+  .onChange(v => { if (starPoints) starPoints.material.uniforms.uGaussianSigma.value = v; requestRender(); });
 fShape.add(P, 'irregularity',  0, 1.0, 0.01) .name('Blob warp')
-  .onChange(v => { if (starPoints) starPoints.material.uniforms.uIrregularity.value = v; });
+  .onChange(v => { if (starPoints) starPoints.material.uniforms.uIrregularity.value = v; requestRender(); });
 
 const fColors = gui.addFolder('Color Weights').close();
 fColors.add(P, 'w_white',    0, 1, 0.01).name('Cream (#FFFBED)').onFinishChange(buildStars);
@@ -679,19 +702,37 @@ fFC.add(P, 'fc_warmth',    -0.2, 0.2, 0.005).name('Warmth')       .onChange(upda
 fFC.add(P, 'fc_saturation', 0,   1.5, 0.01) .name('Saturation')   .onChange(updateFCUniforms);
 
 const fFG = gui.addFolder('Film Grain');
-fFG.add(P, 'fg_enabled')                   .name('Enabled')      .onChange(v => fgPass.uniforms.uEnabled.value = v ? 1 : 0);
-fFG.add(P, 'fg_intensity', 0, 0.2,  0.002) .name('Intensity')    .onChange(v => fgPass.uniforms.uIntensity.value = v);
-fFG.add(P, 'fg_scale',     0.5, 4,  0.05)  .name('Grain size')   .onChange(v => fgPass.uniforms.uScale.value = v);
-fFG.add(P, 'fg_colorNoise',0, 1,    0.01)  .name('Colour noise') .onChange(v => fgPass.uniforms.uColorNoise.value = v);
+fFG.add(P, 'fg_enabled')                   .name('Enabled')      .onChange(v => { fgPass.uniforms.uEnabled.value = v ? 1 : 0; requestRender(); });
+fFG.add(P, 'fg_intensity', 0, 0.2,  0.002) .name('Intensity')    .onChange(v => { fgPass.uniforms.uIntensity.value = v; requestRender(); });
+fFG.add(P, 'fg_scale',     0.5, 4,  0.05)  .name('Grain size')   .onChange(v => { fgPass.uniforms.uScale.value = v; requestRender(); });
+fFG.add(P, 'fg_colorNoise',0, 1,    0.01)  .name('Colour noise') .onChange(v => { fgPass.uniforms.uColorNoise.value = v; requestRender(); });
+
+// ---------------------------------------------------------------------------
+// On-demand render — nothing redraws unless state actually changes.
+// GPU stays completely idle between interactions.
+// Declared before bootstrap so buildStars() / update*() can call it.
+// ---------------------------------------------------------------------------
+let renderPending = false;
+function requestRender() {
+  if (renderPending) return;
+  renderPending = true;
+  requestAnimationFrame(() => {
+    renderPending = false;
+    composer.render();
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Resize
 // ---------------------------------------------------------------------------
 window.addEventListener('resize', () => {
+  const s = clampedSize();
+  renderer.setPixelRatio(s.dpr);
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
   updateHalUniforms();
   updateCAUniforms();
+  requestRender();
 });
 
 // ---------------------------------------------------------------------------
@@ -703,17 +744,6 @@ updateCAUniforms();
 updateFCUniforms();
 updateFGUniforms();
 setRefImage(PRESETS[0].name);
-
-// ---------------------------------------------------------------------------
-// Render loop
-// ---------------------------------------------------------------------------
-let frameCount = 0;
-function animate() {
-  requestAnimationFrame(animate);
-  fgPass.uniforms.uTime.value = frameCount++;
-  composer.render();
-}
-animate();
 </script>
 </body>
 </html>
