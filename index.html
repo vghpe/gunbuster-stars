@@ -627,10 +627,15 @@ loadInput.addEventListener('change', e => {
 // ---------------------------------------------------------------------------
 // 4K PNG Export
 // ---------------------------------------------------------------------------
+const EXPORT_SIZES = {
+  '16:9  (3840×2160)':  [3840, 2160],
+  '4:3   (3840×2880)':  [3840, 2880],
+  'portrait (2160×3840)': [2160, 3840],
+};
+const exportState = { size: Object.keys(EXPORT_SIZES)[0] };
+
 async function exportPNG() {
-  const aspect      = window.innerWidth / window.innerHeight;
-  const exportW     = 3840;
-  const exportH     = Math.round(exportW / aspect);
+  const [exportW, exportH] = EXPORT_SIZES[exportState.size];
   // Scale relative to CSS pixel width — star sizes in P are CSS-pixel units,
   // so we need export_pixels / css_pixels (not export_pixels / render_buffer_pixels).
   const scaleRatio  = exportW / window.innerWidth;
@@ -795,7 +800,8 @@ gui.add(presetState, 'preset', PRESETS.map(p => p.name))
 const ioState = {};
 gui.add({ save: savePreset }, 'save').name('Save JSON ↓');
 gui.add({ load: () => loadInput.click() }, 'load').name('Load JSON ↑');
-gui.add({ fn: exportPNG }, 'fn').name('Export 4K PNG ↓');
+gui.add(exportState, 'size', Object.keys(EXPORT_SIZES)).name('Export size');
+gui.add({ fn: exportPNG }, 'fn').name('Export PNG ↓');
 
 const fStars = gui.addFolder('Stars');
 fStars.add(P, 'count',        100, 3000, 1)   .name('Count')         .onFinishChange(buildStars);
